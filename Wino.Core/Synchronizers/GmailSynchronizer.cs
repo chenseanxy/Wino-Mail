@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -145,6 +146,8 @@ public class GmailSynchronizer : WinoSynchronizer<IClientServiceRequest, Message
 
         cancellationToken.ThrowIfCancellationRequested();
 
+    retry:
+
         bool isInitialSync = string.IsNullOrEmpty(Account.SynchronizationDeltaIdentifier);
 
         _logger.Debug("Is initial synchronization: {IsInitialSync}", isInitialSync);
@@ -215,7 +218,24 @@ public class GmailSynchronizer : WinoSynchronizer<IClientServiceRequest, Message
                 if (!isFirstDeltaCheck)
                     historyRequest.PageToken = nextPageToken;
 
-                var historyResponse = await historyRequest.ExecuteAsync(cancellationToken);
+                ListHistoryResponse historyResponse = null;
+
+                try
+                {
+                   historyResponse = await historyRequest.ExecuteAsync(cancellationToken);
+                }
+                catch (GoogleApiException googleException) when (googleException.HttpStatusCode.Equals(HttpStatusCode.NotFound))
+                {
+                    _logger.Warning("Google returned 404 on partial sync, retrying full initial sync.");
+
+                    // A valid delta token will be persisted once we finnish the full resyncs
+                    Account.SynchronizationDeltaIdentifier = null;
+                    goto retry;
+                }
+                catch (Exception)
+                {
+                    throw;
+                }
 
                 nextPageToken = historyResponse.NextPageToken;
 
